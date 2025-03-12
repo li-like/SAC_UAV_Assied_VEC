@@ -11,7 +11,7 @@ from network.channel import ChannelModel
 
 
 class SACAgent:
-    def __init__(self, network, hidden_dim=256, lr=1e-5, gamma=0.99, tau=0.001, alpha=0.001, weight_decay=1e-5):
+    def __init__(self, network, hidden_dim=256, lr=1e-4, gamma=0.99, tau=0.01, alpha=0.01, weight_decay=1e-5):
         self.network = network  # 直接使用外部的网络环境实例
         state_dim = network.state_dim
         action_dim = network.action_dim

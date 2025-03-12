@@ -26,7 +26,7 @@ class Network:
             num_vehicles=15,
             num_lower_uavs=1,
             num_upper_uavs=1,
-            num_rsus=5,
+            num_rsus=8,
             num_base_stations=1
         )
         # 计算真实状态维度
@@ -142,83 +142,90 @@ class Network:
     def add_base_station(self, base_station: BaseStation):
         self.base_stations.append(base_station)
 
-    def reset_nodes(self, num_vehicles, num_lower_uavs, num_upper_uavs, num_rsus,
-                         num_base_stations):
-        """初始化所有节点，并按照布局生成合理的位置"""
-        # 清空已有节点列表，防止重复添加
+    def reset_nodes(self, num_vehicles, num_lower_uavs, num_upper_uavs, num_rsus,num_base_stations):
+        """初始化所有节点，并按照新的10km*10km布局生成合理的位置"""
+        # 清空已有节点
         self.vehicles = []
         self.lower_uavs = []
         self.upper_uavs = []
         self.rsus = []
         self.base_stations = []
 
-        lane_positions = [
-            (np.array([100, 500, 0]), np.array([900, 500, 0])),  # 水平车道
-            (np.array([500, 100, 0]), np.array([500, 900, 0]))  # 垂直车道
+        # 10km × 10km 场景，五个十字路口（单位：米）
+        intersections = [
+            np.array([5000, 5000, 0]),  # 主十字路口（中心）
+            np.array([2500, 5000, 0]),  # 左侧十字路口
+            np.array([7500, 5000, 0]),  # 右侧十字路口
+            np.array([5000, 2500, 0]),  # 下侧十字路口
+            np.array([5000, 7500, 0])  # 上侧十字路口
         ]
-        intersections = [np.array([500, 500, 0])]  # 十字路口位置
 
-        # 初始化车辆（在车道上）
+        # 车道（水平和垂直）
+        lane_positions = []
+        for inter in intersections:
+            lane_positions.append((inter - np.array([4000, 0, 0]), inter + np.array([4000, 0, 0])))  # 水平车道
+            lane_positions.append((inter - np.array([0, 4000, 0]), inter + np.array([0, 4000, 0])))  # 垂直车道
+
+        # 初始化车辆（分布在十字车道上）
         for i in range(num_vehicles):
             lane = random.choice(lane_positions)
             position = lane[0] + np.random.rand() * (lane[1] - lane[0])
             vehicle = Vehicle(vid=i)
             vehicle.position = position
             vehicle.position[2] = 0  # 固定高度
-            vehicle.direction=vehicle._random_direction()
+            vehicle.direction = vehicle._random_direction()
             vehicle.task_queue.clear()
             vehicle.generate_task(vehicle.vid)
             self.add_vehicle(vehicle)
 
-        # 初始化低空无人机（尽量在十字路口附近）
+        # 初始化低空无人机（在十字路口附近）
         for i in range(num_lower_uavs):
-            position = intersections[0] + np.random.uniform(-300, 300, 3)
+            intersection = random.choice(intersections)
+            position = intersection + np.random.uniform(-500, 500, 3)
             position[2] = 50  # 固定高度
             lower_uav = LowerUAV(uav_id=i, position=position, speed=10)
             lower_uav.task_queue.clear()
-            lower_uav.energy=100
+            lower_uav.energy = 100
             self.add_lower_uav(lower_uav)
 
-        # 初始化高空无人机（在十字路口上方）
+        # 初始化高空无人机（在主十字路口上方）
         for i in range(num_upper_uavs):
-            position = intersections[0] + np.random.uniform(-10, 10, 3)
+            intersection = intersections[0]
+            position = intersection + np.random.uniform(-50, 50, 3)
             position[2] = 200  # 固定高度
             upper_uav = UpperUAV(uav_id=i, position=position)
             upper_uav.task_queue.clear()
             upper_uav.energy = 100
             self.add_upper_uav(upper_uav)
 
-        # 初始化 RSU（在路边）
-        for i in range(num_rsus):
-            lane = random.choice(lane_positions)
-            position = lane[0] + np.random.rand() * (lane[1] - lane[0])
-            position[2] = 0  # 固定高度
-            position += np.random.uniform(-100, 100, 3) * np.array([1, 1, 0])
-            rsu = RSU(rsu_id=i, position=position, coverage_range=300, compute_capacity=50e8)
+        # 初始化 RSU（均匀分布在路边，共8个）
+        rsu_positions = [
+            intersections[0],  # 中央十字路口
+            intersections[1], intersections[2], intersections[3], intersections[4],  # 四个衍生十字路口
+            np.array([1000, 5000, 0]),  # 左侧道路
+            np.array([9000, 5000, 0]),  # 右侧道路
+            np.array([5000, 1000, 0]),  # 下侧道路
+            np.array([5000, 9000, 0])  # 上侧道路
+        ]
+
+        for i, position in enumerate(rsu_positions):
+            rsu = RSU(rsu_id=i, position=position, coverage_range=1000, compute_capacity=50e8)
             self.add_rsu(rsu)
 
-        # 初始化基站（在边缘区域）
+        # 初始化基站（放置在边界，靠近四个角落）
+        base_station_positions = [
+            np.array([1000, 1000, 0]),  # 左下角
+            np.array([9000, 1000, 0]),  # 右下角
+            np.array([1000, 9000, 0]),  # 左上角
+            np.array([9000, 9000, 0])  # 右上角
+        ]
         for i in range(num_base_stations):
-            position = np.array([random.choice([100, 900]), random.choice([100, 900]), 0])
-            position[2] = 0  # 固定高度
-            base_station = BaseStation(bs_id=i, position=position, coverage_range=500, compute_capacity=70e8)
+            position = random.choice(base_station_positions)
+            base_station = BaseStation(bs_id=i, position=position, coverage_range=2000, compute_capacity=70e8)
             self.add_base_station(base_station)
+
         self.time_step = 0
-        # self.print_for_init()
         return self.get_global_state()
-    # def reset(self):
-    #     """重置环境并返回初始状态"""
-    #     for vehicle in self.vehicles:
-    #         vehicle.reset()
-    #     for lower_uav in self.lower_uavs:
-    #         lower_uav.reset()
-    #     for upper_uav in self.upper_uavs:
-    #         upper_uav.reset()
-    #     for rsu in self.rsus:
-    #         rsu.reset()
-    #     for base_station in self.base_stations:
-    #         base_station.reset()
-    #     self.time_step = 0
 
 
     def print_for_init(self):
@@ -260,41 +267,76 @@ class Network:
             pos = bs.position
             print(f"BaseStation {bs.bs_id} 位置: [{pos[0]:.2f}, {pos[1]:.2f}, "
                   f"{pos[2]:.2f}] 覆盖范围: {bs.coverage_range} m 计算能力: {bs.compute_capacity:.0e} ops")
+
     def visualize(self):
         """可视化初始化后的网络环境"""
         fig = plt.figure()
         ax = fig.add_subplot(111, projection='3d')
 
-        # 绘制车辆节点
+        # 场景范围
+        scene_size = 10000  # 10km * 10km
+
+        # 定义十字路口坐标
+        intersections = [
+            np.array([5000, 5000, 0]),  # 主十字路口
+            np.array([2500, 5000, 0]),  # 左侧十字路口
+            np.array([7500, 5000, 0]),  # 右侧十字路口
+            np.array([5000, 2500, 0]),  # 下侧十字路口
+            np.array([5000, 7500, 0])  # 上侧十字路口
+        ]
+
+        # 车道（水平和垂直）
+        lane_positions = [
+            ((0, 5000, 0), (10000, 5000, 0)),  # 水平主干道
+            ((0, 2500, 0), (10000, 2500, 0)),  # 水平次干道
+            ((0, 7500, 0), (10000, 7500, 0)),  # 水平次干道
+            ((5000, 0, 0), (5000, 10000, 0)),  # 垂直主干道
+            ((2500, 0, 0), (2500, 10000, 0)),  # 垂直次干道
+            ((7500, 0, 0), (7500, 10000, 0))  # 垂直次干道
+        ]
+
+        # 绘制车道
+        for lane in lane_positions:
+            x_vals = [lane[0][0], lane[1][0]]
+            y_vals = [lane[0][1], lane[1][1]]
+            z_vals = [lane[0][2], lane[1][2]]
+            ax.plot(x_vals, y_vals, z_vals, 'k-', linewidth=2, label="Road")
+
+        # 绘制十字路口
+        for intersection in intersections:
+            ax.scatter(intersection[0], intersection[1], intersection[2], c='black', marker='X', s=100,
+                       label="Intersection")
+
+        # 绘制车辆
         for vehicle in self.vehicles:
             ax.scatter(vehicle.position[0], vehicle.position[1], vehicle.position[2], c='r', marker='o',
                        label="Vehicle")
 
-        # 绘制低空无人机节点
+        # 绘制低空无人机
         for lower_uav in self.lower_uavs:
             ax.scatter(lower_uav.position[0], lower_uav.position[1], lower_uav.position[2], c='b', marker='^',
                        label="Lower UAV")
 
-        # 绘制高空无人机节点
+        # 绘制高空无人机
         for upper_uav in self.upper_uavs:
             ax.scatter(upper_uav.position[0], upper_uav.position[1], upper_uav.position[2], c='g', marker='v',
                        label="Upper UAV")
 
-        # 绘制RSU节点
+        # 绘制 RSU
         for rsu in self.rsus:
             ax.scatter(rsu.position[0], rsu.position[1], rsu.position[2], c='y', marker='s', label="RSU")
 
-        # 绘制基站节点
+        # 绘制基站
         for base_station in self.base_stations:
             ax.scatter(base_station.position[0], base_station.position[1], base_station.position[2], c='m', marker='D',
                        label="Base Station")
 
         # 设置坐标轴标签
-        ax.set_xlabel('X Coordinate')
-        ax.set_ylabel('Y Coordinate')
-        ax.set_zlabel('Z Coordinate')
+        ax.set_xlabel('X Coordinate (m)')
+        ax.set_ylabel('Y Coordinate (m)')
+        ax.set_zlabel('Z Coordinate (m)')
 
-        # 防止标签重复
+        # 统一图例，防止重复
         handles, labels = ax.get_legend_handles_labels()
         by_label = dict(zip(labels, handles))
         ax.legend(by_label.values(), by_label.keys())

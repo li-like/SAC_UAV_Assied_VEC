@@ -88,20 +88,36 @@ def main():
     # ---------------------------
     # 5. 可视化训练进度
     # ---------------------------
+    def smooth_curve(data, alpha=0.3):
+        smoothed = []
+        last = data[0]  # 初始值
+        for point in data:
+            last = alpha * point + (1 - alpha) * last  # 计算指数移动平均
+            smoothed.append(last)
+        return smoothed
+
+    # 计算平滑后的曲线
+    smoothed_rewards = smooth_curve(episode_rewards, alpha=0.3)
+    smoothed_lengths = smooth_curve(episode_lengths, alpha=0.3)
+
     plt.figure(figsize=(10, 5))
-    plt.plot(range(1, num_episodes+1), episode_rewards, marker='o')
+    plt.plot(range(1, num_episodes + 1), episode_rewards, marker='o', label="Original", alpha=0.3)
+    plt.plot(range(1, num_episodes + 1), smoothed_rewards, marker='o', label="Smoothed", color='blue')
     plt.xlabel("Episode")
     plt.ylabel("Total Reward")
     plt.title("Training Progress: Episode Rewards")
+    plt.legend()
     plt.grid(True)
     plt.savefig("training_progress.png")
     plt.close()
 
     plt.figure(figsize=(10, 5))
-    plt.plot(range(1, num_episodes+1), episode_lengths, marker='o', color='orange')
+    plt.plot(range(1, num_episodes + 1), episode_lengths, marker='o', color='orange', alpha=0.3, label="Original")
+    plt.plot(range(1, num_episodes + 1), smoothed_lengths, marker='o', color='red', label="Smoothed")
     plt.xlabel("Episode")
     plt.ylabel("Episode Length (timesteps)")
     plt.title("Training Progress: Episode Lengths")
+    plt.legend()
     plt.grid(True)
     plt.savefig("episode_lengths.png")
     plt.close()
