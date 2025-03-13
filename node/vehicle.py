@@ -4,7 +4,7 @@ from enum import IntEnum
 
 # 分类阈值配置
 COMPUTE_THRESHOLD = 2000  # MB
-LATENCY_THRESHOLD = 3  # s
+LATENCY_THRESHOLD = 0.1  # s
 # 10km × 10km 场景，五个十字路口（单位：米）
 intersections = [
     np.array([5000, 5000, 0]),  # 主十字路口（中心）
