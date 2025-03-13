@@ -44,11 +44,21 @@ class SACAgent:
         raw_action = raw_action.detach().numpy()[0]
 
         # 定义卸载目标和计算资源分配的标签
+        task_action = raw_action[:15 *len(self.network.vehicles)]  # 前 15 * num_vehicles 长度的部分
+        luav_action = raw_action[15 * len(self.network.vehicles):]  # 后 5 长度的部分
         offload_targets = ["local", "Closet_RSU", "LUAV", "HUAV_RSU", "HUAV_BS"]
         offload_ratio_targets = ["local", "Closet_RSU", "LUAV", "HUAV_RSU", "HUAV_BS"]
         compute_targets = ["local", "Closet_RSU", "LUAV", "HUAV_RSU", "HUAV_BS"]
-        # 将 raw_action 解析为每辆车的策略
-        strategies = np.reshape(raw_action, (len(self.network.vehicles), 15))
+        luav_move_strategies = np.reshape(luav_action, (len(self.network.lower_uavs), 2))
+        luav_strategies = {}
+        for i in range(len(self.network.lower_uavs)):
+            luav_strategy = {
+                "direction": np.clip(luav_move_strategies[i, 0], 0, 1),  # 限制方向在 [0, 1]
+                "speed": np.clip(luav_move_strategies[i, 1], 0, 50)  # 限制速度在 [0, 50]
+            }
+            luav_strategies[f"luav_{i}"] = luav_strategy
+        # 将 task_action 解析为每辆车的策略
+        strategies = np.reshape(task_action, (len(self.network.vehicles), 15))
         # 创建一个总字典来存储所有车的策略
         task_strategies = {}
         node_resource_usage = {}
@@ -70,9 +80,12 @@ class SACAgent:
             mapped_targets = self.map_offload_targets(vehicle_strategy["offload_targets"],self.find_closest_rsu(self.network.vehicles[i].position))
             vehicle_strategy["offload_targets"] = mapped_targets
             for target, ratio in vehicle_strategy["offload_ratios"].items():
-                if ratio > 0:
+                if ratio > 0 and target != "local":
                     node_id = vehicle_strategy["offload_targets"][target]
-                    node_key = f"{target}_{node_id}"  # 节点唯一标识符，例如 "RSU_1"
+                    if "RSU" in target:
+                        node_key = f"RSU_{node_id}"  # 节点唯一标识符，例如 "RSU_1"
+                    else:
+                        node_key = f"{target}_{node_id}"  # 节点唯一标识符，例如 "RSU_1"
                     compute_allocation = vehicle_strategy["compute_allocations"][target]
                     # 更新节点资源使用总量
                     if node_key in node_resource_usage:
@@ -82,26 +95,24 @@ class SACAgent:
             task_strategies[f"vehicle_{i}"] = vehicle_strategy
             # 检查并修正资源分配
             # 检查并修正资源分配
-            for node_key, total_allocation in node_resource_usage.items():
-                if total_allocation > 1:
-                    # 计算缩放比例
-                    scale_factor = 1 / total_allocation
-
-                    # 遍历 task_strategies，按比例缩减分配
-                    for vehicle_key, vehicle_strategy in task_strategies.items():
-                        for target, ratio in vehicle_strategy["offload_ratios"].items():
-                            if ratio > 0:
-                                node_id = vehicle_strategy["offload_targets"][target]
-                                current_node_key = f"{target}_{node_id}"
-                                if current_node_key == node_key:
-                                    # 按比例缩减计算资源分配
-                                    vehicle_strategy["compute_allocations"][target] *= scale_factor
-
-                    # 更新节点资源使用总量
-                    node_resource_usage[node_key] = 1
+        # 修正资源分配（遍历所有车辆策略）
+        for node_key, total_allocation in node_resource_usage.items():
+            if total_allocation > 1:
+                scale_factor = 1 / total_allocation
+                for vehicle_strategy in task_strategies.values():
+                    for target in vehicle_strategy["offload_ratios"]:
+                        if target == "local":
+                            continue
+                        current_node_id = vehicle_strategy["offload_targets"][target]
+                        if "RSU" in target:
+                            current_node_key = f"RSU_{current_node_id}"  # 节点唯一标识符，例如 "RSU_1"
+                        else:
+                            current_node_key = f"{target}_{current_node_id}"  # 节点唯一标识符，例如 "RSU_1"
+                        if current_node_key == node_key:
+                            vehicle_strategy["compute_allocations"][target] *= scale_factor
+                node_resource_usage[node_key] = 1  # 确保总量为1
             # 打印结果
-        print("task_strategies_映射", task_strategies)
-        return task_strategies
+        return task_strategies,luav_strategies
 
     def compute_task_delay(self, task_strategies):
         """
@@ -113,7 +124,7 @@ class SACAgent:
         """
         task_delays = {}
         channel = ChannelModel()  # 初始化信道模型
-
+        total_energy = 0
         for vehicle_id, strategy in task_strategies.items():
             # 仅处理键名以 "vehicle_" 开头的条目
             if not vehicle_id.startswith("vehicle_"):
@@ -138,26 +149,40 @@ class SACAgent:
                         # 计算时延
                         if target == "local":
                             delay = vehicle.current_task().compute_load / vehicle.compute_capacity*strategy["compute_allocations"]["local"]
+                            total_energy += delay* pow(vehicle.compute_capacity*strategy["compute_allocations"]["local"],3)*vehicle.km
                         elif target == "Closet_RSU":
-                            delay = channel.vehicle_to_Clostrsu_time(
+                            transmit_delay,compute_delay = channel.vehicle_to_Clostrsu_time(
                                 vehicle.position, node.position, vehicle.current_task(),
                                 node.compute_capacity*strategy["compute_allocations"]["Closet_RSU"], vehicle.tx_power
                             )
+                            delay = transmit_delay + compute_delay
+                            total_energy += (compute_delay * pow(
+                                node.compute_capacity*strategy["compute_allocations"]["Closet_RSU"], 3) * node.km+vehicle.tx_power*transmit_delay)
                         elif target == "LUAV":
-                            delay = channel.vehicle_to_luav_time(
+                            transmit_delay,compute_delay = channel.vehicle_to_luav_time(
                                 vehicle.position, node.position, vehicle.current_task(),
                                 node.compute_capacity*strategy["compute_allocations"]["LUAV"], vehicle.tx_power
                             )
+                            delay = transmit_delay + compute_delay
+                            total_energy += (compute_delay * pow(
+                                node.compute_capacity * strategy["compute_allocations"]["LUAV"],
+                                3) * node.km + vehicle.tx_power * transmit_delay)
                         elif target == "HUAV_RSU":
-                            delay = channel.luav_rsu_time(
+                            delay = channel.huav_rsu_time(
                                 vehicle.position, node.position, node.position, vehicle.current_task(),
                                 node.compute_capacity*strategy["compute_allocations"]["HUAV_RSU"], vehicle.tx_power
                             )
+                            total_energy += (delay * pow(
+                                node.compute_capacity * strategy["compute_allocations"]["HUAV_RSU"],
+                                3) * node.km)
                         elif target == "HUAV_BS":
-                            delay = channel.luav_bs_time(
+                            delay = channel.huav_bs_time(
                                 vehicle.position, node.position, node.position, vehicle.current_task(),
                                 node.compute_capacity*strategy["compute_allocations"]["HUAV_BS"], vehicle.tx_power
                             )
+                            total_energy += (delay * pow(
+                                node.compute_capacity * strategy["compute_allocations"]["HUAV_BS"],
+                                3) * node.km)
                         else:
                             raise ValueError(f"Invalid offload target: {target}")
 
@@ -170,7 +195,7 @@ class SACAgent:
             else:
                 task_delays[vehicle_id] = 0  # 如果没有卸载目标，时延为 0
 
-        return task_delays
+        return task_delays,total_energy
     def _get_node(self, target_type, node_id, vehicle):
         """根据类型和ID获取节点对象"""
         if target_type == "Closet_RSU":
@@ -257,11 +282,14 @@ class SACAgent:
         return mapped
 
 
-    def get_reward(self,task_strategies):
+    def get_reward(self,task_strategies,luav_strategies):
         total_reward = 0
-        node_resource_usage = {}
         total_task_delay = 0  # 初始化总任务时延
-        if_OverComputation = False  # 检查节点资源是否超过1
+        total_energy = self._apply_action(task_strategies,luav_strategies)
+        task_delay, other_energy = self.compute_task_delay(task_strategies)
+        total_task_delay += sum(task_delay.values())  # 累加所有车辆的任务时延
+        total_energy += other_energy
+
         for vehicle_id, strategy in task_strategies.items():
             offload_ratios = strategy["offload_ratios"]
             if not vehicle_id.startswith("vehicle_"):
@@ -277,8 +305,7 @@ class SACAgent:
             task_attribute = task.task_type
             max_latency = task.max_latency  # 任务最大容忍时延
             if_Classify = False #检查任务是否分类正确
-            task_delay = self.compute_task_delay(task_strategies)
-            total_task_delay += sum(task_delay.values())  # 累加所有车辆的任务时延
+
             current_delay = task_delay.get(vehicle_id, float('inf'))  # 若无数据则默认超时
             # 3. 根据任务属性计算奖励
             if task_attribute == "RESOURCE_INTENSIVE":
@@ -310,13 +337,13 @@ class SACAgent:
             #奖励计算部分
             ratio_error = abs(sum_ratios - 1.0)
             # 奖励与误差成反比，误差越小奖励越高
-            total_reward -= ratio_error * 10  # 调整系数可根据实际情况修改
+            total_reward -= ratio_error * 1  # 调整系数可根据实际情况修改
             # 假设 current_delay 表示任务时延，max_latency 为最大容忍时延
             if current_delay <= max_latency:
-                delay_reward = (max_latency - current_delay) / max_latency * 10  # 奖励值在 0～100 之间
+                delay_reward = (max_latency - current_delay) / max_latency * 1  # 奖励值在 0～100 之间
                 total_reward += delay_reward
             else:
-                total_reward -= 20  # 超时惩罚
+                total_reward -= 2  # 超时惩罚
             #检查是否某一项卸载比例为 1
             if any(math.isclose(ratio, 1.0, rel_tol=1e-5) for ratio in offload_ratios.values()):
                 total_reward -= 1  # 鼓励部分卸载，给予负奖励
@@ -326,13 +353,13 @@ class SACAgent:
                 total_reward -= 1
             else:
                 total_reward += 1
+        total_reward -= (total_energy*0.5 +total_task_delay*20)
         return total_reward
 
-    def step(self, action):
-        # 1. 计算当前奖励
-        reward = self.get_reward(action)
-        # 2. 执行动作（更新节点资源分配）
-        self._apply_action(action)
+    def step(self, task_strategies,luav_strategies):
+        # 1. 执行动作,在rewrad中执行
+        # 2. 计算当前奖励
+        reward = self.get_reward(task_strategies,luav_strategies)
         # 3. 更新环境状态（例如车辆移动、任务生成）
         self._update_environment(self.network.time_step)
         # 4. 获取下一状态
@@ -343,9 +370,22 @@ class SACAgent:
         # 6. 返回结果
         print(f"reward:{reward}")
         return next_state, reward, done, {}
+    def get_energy(self,task_strategies):
+        total_energy = 0
 
-    def _apply_action(self, action):
-        pass
+    def _apply_action(self, task_strategies,luav_strategies):
+
+        # 遍历每个底层无人机（LUAV）
+        luav_cosumu_energy = 0
+        for luav_key, luav_action in luav_strategies.items():
+            luav_id = int(luav_key.split("_")[1])  # 提取编号
+            direction = luav_action["direction"]
+            speed = luav_action["speed"]
+            # 调用 luav_move 方法更新位置
+            luav_cosumu_energy += (self.network.lower_uavs[luav_id].
+                                  consume_energy(self.network.lower_uavs[luav_id].luav_move(1, direction, speed),1))
+        return luav_cosumu_energy+self.network.upper_uavs[0].consume_energy()
+
 
     def _update_environment(self,timestep):
         """
@@ -413,42 +453,40 @@ class SACAgent:
         actor_loss.backward()
         torch.nn.utils.clip_grad_norm_(self.actor.parameters(), max_norm=0.5)
         self.actor_optimizer.step()
-        # 打印 actor 网络部分参数的范数
-        for name, param in self.actor.named_parameters():
-            print(f"Actor {name} norm: {param.data.norm().item()}")
-        # 同理打印 critic 参数
-        for name, param in self.critic1.named_parameters():
-            print(f"Critic1 {name} norm: {param.data.norm().item()}")
+        # # 打印 actor 网络部分参数的范数
+        # for name, param in self.actor.named_parameters():
+        #     print(f"Actor {name} norm: {param.data.norm().item()}")
+        # # 同理打印 critic 参数
+        # for name, param in self.critic1.named_parameters():
+        #     print(f"Critic1 {name} norm: {param.data.norm().item()}")
         # 软更新目标网络
         self.soft_update()
 
-    def flatten_action(self,action_dict):
+    def flatten_action(self, action_dict):
         """
-        将动作字典扁平化为固定维度的 numpy 数组。
-        假设 action_dict 的结构如下：
-          {
-             "vehicle_0": {
-                  "offload_targets": {"local": val1, "Closet_RSU": val2, "LUAV": val3, "HUAV_RSU": val4, "HUAV_BS": val5},
-                  "offload_ratios": { ... },  # 数值范围在 [0,1]
-                  "compute_allocations": { ... }  # 数值范围在 [0,1]
-             },
-             "vehicle_1": { ... },
-             ...
-          }
-        将按照车辆顺序拼接所有子字典的数值，顺序为：
-          [vehicle_0.offload_targets(local,Closet_RSU,LUAV,HUAV_RSU,HUAV_BS),
-           vehicle_0.offload_ratios(...), vehicle_0.compute_allocations(...),
-           vehicle_1.offload_targets(...), ... ]
+        将 task_strategies 和 luav_strategies 合并后的动作字典扁平化为 numpy 数组。
         """
         flat = []
-        # 按车辆编号顺序排序（假设键名格式为 "vehicle_{i}"）
-        for vehicle_key in sorted(action_dict.keys(), key=lambda x: int(x.split("_")[1])):
+
+        # 先处理车辆（vehicle_x）
+        vehicle_keys = sorted([k for k in action_dict.keys() if k.startswith("vehicle_")],
+                              key=lambda x: int(x.split("_")[1]))
+        for vehicle_key in vehicle_keys:
             vehicle_action = action_dict[vehicle_key]
             for key in ["offload_targets", "offload_ratios", "compute_allocations"]:
                 subdict = vehicle_action[key]
-                # 保证顺序一致
+                # 确保所有 key 按固定顺序展开
                 for subkey in ["local", "Closet_RSU", "LUAV", "HUAV_RSU", "HUAV_BS"]:
                     flat.append(float(subdict[subkey]))
+
+        # 再处理低空无人机（luav_x）
+        luav_keys = sorted([k for k in action_dict.keys() if k.startswith("luav_")], key=lambda x: int(x.split("_")[1]))
+        for luav_key in luav_keys:
+            luav_action = action_dict[luav_key]
+            # 按顺序添加 direction 和 speed
+            flat.append(float(luav_action["direction"]))
+            flat.append(float(luav_action["speed"]))
+
         return np.array(flat, dtype=np.float32)
 
     def store_experience(self, state, action, reward, next_state, done):
@@ -479,8 +517,6 @@ class Actor(nn.Module):
 
         log_std = self.log_std(x)
         log_std = torch.clamp(log_std, -20, 2)
-        print("mu stats: min =", mu.min().item(), "max =", mu.max().item())
-        print("log_std stats: min =", log_std.min().item(), "max =", log_std.max().item())
         return mu, log_std
 
     def sample(self, state):

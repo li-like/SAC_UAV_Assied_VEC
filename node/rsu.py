@@ -29,7 +29,7 @@ class RSU:
         self.coverage_range = coverage_range
         self.compute_capacity = compute_capacity
         self.available_resources = compute_capacity  # 剩余计算资源
-
+        self.km = 10e-27  # 有效电容系数
         # 新增状态跟踪
         self.covered_vehicles: Set[int] = set()  # 覆盖范围内的车辆ID集合
 

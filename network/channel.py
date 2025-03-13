@@ -42,7 +42,7 @@ class ChannelModel:
         compute_delay = task.offload_ratio * task.compute_load / f_rsu_0
         if rate==0:
             raise ValueError("Invalid rate!")
-        return transmit_delay + compute_delay
+        return transmit_delay,compute_delay
 
     def vehicle_to_luav_time(self, vehicle_pos, luav_pos, task, f_luav, P_tx):
         """
@@ -50,29 +50,31 @@ class ChannelModel:
         """
         d = np.linalg.norm(np.array(vehicle_pos) - np.array(luav_pos))
         h = self.beta0 / (d )
-        SNR = (P_tx * self.beta0 ) / (self.N0 )
+        SNR = (P_tx * h ) / (self.N0 )
         rate = self.B_uav * np.log2(1 + SNR)
 
         transmit_delay = task.offload_ratio * task.data_size / rate
         compute_delay = task.offload_ratio * task.compute_load / f_luav
         if rate==0:
             raise ValueError("Invalid rate!")
-        return transmit_delay + compute_delay
+        return transmit_delay,compute_delay
 
-    def luav_rsu_time(self, vehicle_pos, huav_pos, rsu_pos, task, f_rsu, P_tx_veh):
+    def huav_rsu_time(self, vehicle_pos, huav_pos, rsu_pos, task, f_rsu, P_tx_veh):
         """
         中继信道计算（车->HUAV->RSU/BS）: 车到高空无人机，再到RSU
         """
         d_vh = np.linalg.norm(np.array(vehicle_pos) - np.array(huav_pos))
+        d_vh = d_vh+1
         h_vh = self.beta0 / (d_vh)
         d_hr = np.linalg.norm(np.array(huav_pos) - np.array(rsu_pos))
+        d_hr = d_hr+1
         h_hr = self.beta0 / (d_hr)
 
-        SNR_vh = (P_tx_veh * self.beta0) / (self.N0)
+        SNR_vh = (P_tx_veh * h_vh) / (self.N0)
         rate_vh = self.B_uav * np.log2(1 + SNR_vh)
         transmit_delay_vh = task.offload_ratio * task.data_size / rate_vh
 
-        SNR_hr = (self.HUAV_TX_POWER * self.beta0) / (self.N0)
+        SNR_hr = (self.HUAV_TX_POWER * h_hr) / (self.N0)
         rate_hr = self.B_uav * np.log2(1 + SNR_hr)
         transmit_delay_hr = task.offload_ratio * task.data_size / rate_hr
 
@@ -80,22 +82,24 @@ class ChannelModel:
         return_delay = self.return_delta * (transmit_delay_vh + transmit_delay_hr)
         if rate_hr==0 or rate_vh==0:
             raise ValueError("Invalid rate!")
-        return transmit_delay_vh + transmit_delay_hr + compute_delay + return_delay
+        return transmit_delay_vh +transmit_delay_hr + compute_delay + return_delay
 
-    def luav_bs_time(self, vehicle_pos, huav_pos, bs_pos, task, f_bs, P_tx_veh):
+    def huav_bs_time(self, vehicle_pos, huav_pos, bs_pos, task, f_bs, P_tx_veh):
         """
         中继信道计算（车->HUAV->BS）
         """
         d_vh = np.linalg.norm(np.array(vehicle_pos) - np.array(huav_pos))
+        d_vh = d_vh+1
         h_vh = self.beta0 / (d_vh)
         d_hr = np.linalg.norm(np.array(huav_pos) - np.array(bs_pos))
+        d_hr = d_hr+1
         h_hr = self.beta0 / (d_hr)
 
-        SNR_vh = (P_tx_veh * self.beta0) / (self.N0)
+        SNR_vh = (P_tx_veh * h_vh) / (self.N0)
         rate_vh = self.B_uav * np.log2(1 + SNR_vh)
         transmit_delay_vh = task.offload_ratio * task.data_size / rate_vh
 
-        SNR_hr = (self.HUAV_TX_POWER * self.beta0) / (self.N0 )
+        SNR_hr = (self.HUAV_TX_POWER * h_hr) / (self.N0 )
         rate_hr = self.B_uav * np.log2(1 + SNR_hr)
         transmit_delay_hb = task.offload_ratio * task.data_size / rate_hr
         if rate_hr==0 or rate_vh==0:

@@ -29,6 +29,7 @@ class BaseStation:
         self.coverage_range = coverage_range
         self.compute_capacity = compute_capacity
         self.available_resources = compute_capacity  # 剩余计算资源
+        self.km = 10e-27
     def get_state(self) -> dict:
         """返回基站的状态（用于SAC算法观察）"""
         return {

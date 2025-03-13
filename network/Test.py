@@ -32,11 +32,9 @@ def main():
     for episode in range(num_episodes):
         # 重置环境，获取初始状态
         timesteps = 0
-        state = network.reset_nodes(15,1,1,5,1)
+        state = network.reset_nodes(30,4,1,1)
         done = False
         episode_reward = 0
-
-
         # 用于记录本 episode 内车辆轨迹（这里只以第一辆车为例）
         vehicle_trajectory = []
 
@@ -46,15 +44,15 @@ def main():
             # print(f"Step {timesteps}, State: {state}")  # 打印当前状态
 
             # 选择动作，返回值为各车辆的卸载策略字典
-            action = agent.select_action(state)
+            task_strategies,luav_strategies = agent.select_action(state)
             # print(f"Step {timesteps}, Action: {action}")  # 打印选择的动作
 
             # 执行动作，环境更新：agent.step(action) 内部调用 _apply_action（目前为 pass）和 _update_environment
-            next_state, reward, done, info = agent.step(action)
+            next_state, reward, done, info = agent.step(task_strategies,luav_strategies)
             # print(f"Step {timesteps}, Next State: {next_state}, Reward: {reward}, Done: {done}")  # 打印下一状态、奖励和 done 标志
-
+            combined_strategies = {**task_strategies, **luav_strategies}
             # 存储经验并进行更新（你的 SACAgent 中已有 replay_buffer 和 update 方法）
-            agent.store_experience(state, action, reward, next_state, done)
+            agent.store_experience(state, combined_strategies, reward, next_state, done)
             agent.update(batch_size=128)  # 根据实际情况选择 batch_size
 
             episode_reward += reward
@@ -63,7 +61,6 @@ def main():
             # 记录本 timestep 所有车辆的位置信息
             # 这里以第一辆车位置为例（车辆的 position 是一个 numpy 数组）
             vehicle_trajectory.append(network.vehicles[0].position.copy())
-            print(f"Step {timesteps}, Vehicle Position: {network.vehicles[0].position}")  # 打印车辆位置
             if done:
                 print(f"Episode {episode_reward} finished. Total reward: {episode_reward}")
 
